@@ -72,9 +72,11 @@ class LeetCodeDatabase:
             [(i['questionId'], s['name']) for s in i['topicTags']])
 
         # Save code templates into DB
-        self.db.executemany(
-            """INSERT INTO `codeSnippets` (questionId, lang, code) VALUES (?, ?, ?)""",
-            [(i['questionId'], s['lang'], s['code']) for s in i['codeSnippets']])
+        if i['codeSnippets']:
+            # The GraphQL endpoint returns NULL if no code snippets available
+            self.db.executemany(
+                """INSERT INTO `codeSnippets` (questionId, lang, code) VALUES (?, ?, ?)""",
+                [(i['questionId'], s['lang'], s['code']) for s in i['codeSnippets']])
 
         # Solutions are stored separately
         self.db.commit()
@@ -90,10 +92,46 @@ class LeetCodeDatabase:
             return
 
         r = s['rating']
+        if not r:
+            r = {'average': None, 'count': 0}
         self.db.execute(
             """INSERT INTO `solutions` VALUES (?, ?, ?, ?, ?)""",
             (s['id'], i['questionId'], s['content'], r['average'], r['count']))
         self.db.commit()
+
+    def get_all_question_ids(self):
+        r = self.db.execute("SELECT id FROM `questions`").fetchall()
+        return [item[0] for item in r]
+
+    def get_question(self, id):
+        r = self.db.execute("SELECT * FROM `questions` WHERE id = ?", (id,)).fetchone()
+        result = {
+            'questionId': r[0],
+            'titleSlug': r[1],
+            'title': r[2],
+            'content': r[3],
+            'difficulty': r[4],
+            'likes': r[5],
+            'dislikes': r[6],
+            'totalAccepted': r[7],
+            'totalSubmission': r[8],
+        }
+        r = self.db.execute("SELECT t.tag FROM `topicTags` AS t INNER JOIN `questions` AS q ON q.id = t.questionId WHERE q.id = ?", (id,)).fetchall()
+        result['topicTags'] = [item[0] for item in r]
+        r = self.db.execute("SELECT c.lang, c.code FROM `codeSnippets` AS c INNER JOIN `questions` AS q ON q.id = c.questionId WHERE q.id = ?", (id,)).fetchall()
+        result['codeSnippets'] = [{'lang': item[0], 'code': item[1]} for item in r]
+        r = self.db.execute("SELECT s.id, s.content, s.averageRating, s.votes FROM `solutions` AS s INNER JOIN `questions` AS q ON q.id = s.questionId WHERE q.id = ?", (id,)).fetchall()
+        if r:
+            r = r[0]
+            result['solution'] = {
+                'id': str(r[0]),
+                'content': r[1],
+                'averageRating': r[2],
+                'votes': r[3],
+            }
+        else:
+            result['solution'] = {}
+        return result
 
 
 class LeetCodeClient:
@@ -198,6 +236,10 @@ class LeetCodeClient:
             json.dump(data, f)
         return data
 
+    def get_question(self, id):
+        # Fetch from DB
+        return self.db.get_question(id)
+
 
 def main():
     username = os.environ.get('LEETCODE_USERNAME')
@@ -224,10 +266,18 @@ def main():
             exc_type, exc_obj, exc_tb = sys.exc_info()
             print(f"\x1B[2K{exc_type} when fetching {question['stat']['question__title_slug']}: {exc_obj}", file=sys.stderr)
         except KeyboardInterrupt:
+            print("")
             break
         else:
             success_count += 1
     print(f"{success_count} out of {total_count} LeetCode questions are fetched successfully.")
+
+    output_data = []
+    for question_id in sorted(spider.db.get_all_question_ids()):
+        output_data.append(spider.get_question(question_id))
+
+    with open("output.json", "w") as f:
+        json.dump(output_data, f, indent=2)
 
 
 if __name__ == '__main__':
